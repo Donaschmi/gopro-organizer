@@ -1,0 +1,5 @@
+# macOS
+.DS_Store
+
+# Exported index backups (personal data)
+gopro-index-*.json
