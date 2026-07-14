@@ -718,9 +718,13 @@ main{flex:1;overflow:auto;position:relative}
 #grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;padding:16px}
 .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden;cursor:pointer;transition:transform .1s,border-color .15s}
 .card:hover{transform:translateY(-2px);border-color:var(--accent)}
+.card.sel{outline:3px solid var(--accent);outline-offset:-1px}
+.selBadge{position:absolute;right:6px;top:6px;background:var(--accent);color:#06281f;font-size:13px;font-weight:700;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center}
+#btnSelect.active{background:var(--accent2);border-color:var(--accent2);color:#fff}
 .thumb{width:100%;aspect-ratio:16/9;background:#000 center/cover no-repeat;display:flex;align-items:center;justify-content:center;color:#555;font-size:30px;position:relative}
 .thumb .dur{position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.75);color:#fff;font-size:11px;padding:2px 6px;border-radius:5px}
 .thumb .gpsBadge{position:absolute;left:6px;top:6px;background:rgba(37,194,160,.9);color:#06281f;font-size:10px;font-weight:700;padding:2px 6px;border-radius:5px}
+.thumb .gpsBadge.approx{background:rgba(245,158,11,.9);color:#3d2c00}
 .cardBody{padding:9px 11px}
 .cardBody .name{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cardBody .meta{font-size:11px;color:var(--muted);margin-top:3px}
@@ -778,6 +782,8 @@ main{flex:1;overflow:auto;position:relative}
   <label><input type="checkbox" id="fGps"> <span id="lblGps">📍 Avec GPS</span></label>
   <div id="tagChips"></div>
   <div class="spacer"></div>
+  <button id="btnSelect">☑️ Sélectionner</button>
+  <button id="btnExportSel" class="primary" style="display:none"></button>
   <span id="count" style="font-size:12px;color:var(--muted)"></span>
   <div class="viewBtns">
     <button id="vGrid" class="active">⊞ Grille</button>
@@ -914,7 +920,13 @@ fr:{
  savedIndex:'Index sauvegardé : {0} vidéos. Clique sur « Reconnecter » pour accéder aux fichiers.',
  noneFound:'Aucune vidéo trouvée dans ce dossier.',imported:'{0} enregistrements importés',
  importErr:'Import impossible : ',readErr:'Erreur de lecture : ',err:'Erreur : ',
- open:'▶ Ouvrir',leafletMissing:'Leaflet non chargé.'
+ open:'▶ Ouvrir',leafletMissing:'Leaflet non chargé.',
+ approxNote:'Position approximative — héritée de « {0} » ({1} min d\'écart)',
+ selectBtn:'☑️ Sélectionner',exportSel:'🎬 Exporter ({0})',
+ exportNamePrompt:'Nom du projet (un dossier sera créé sur le disque) :',
+ exportDefault:'Mon film',
+ exportDone:'Script téléchargé !\n\nOuvre le Terminal et lance :\n\nbash ~/Downloads/{0}\n\nIl te demandera de désigner ton dossier GoPro, puis rassemblera les {1} clips dans _Exports/{2} (liens durs si le disque le permet = zéro espace, sinon copies). Ensuite dans iMovie : Fichier → Importer le média → ce dossier.',
+ chooseFolderMac:'Sélectionne ton dossier GoPro (celui choisi dans l\'app)'
 },
 en:{
  pick:'📁 Choose drive / folder',reconnect:'🔌 Reconnect drive',rescan:'🔄 Rescan',
@@ -945,7 +957,13 @@ en:{
  savedIndex:'Saved index: {0} videos. Click "Reconnect" to access files.',
  noneFound:'No videos found in this folder.',imported:'{0} records imported',
  importErr:'Import failed: ',readErr:'Read error: ',err:'Error: ',
- open:'▶ Open',leafletMissing:'Leaflet not loaded.'
+ open:'▶ Open',leafletMissing:'Leaflet not loaded.',
+ approxNote:'Approximate position — inherited from "{0}" ({1} min apart)',
+ selectBtn:'☑️ Select',exportSel:'🎬 Export ({0})',
+ exportNamePrompt:'Project name (a folder will be created on the drive):',
+ exportDefault:'My movie',
+ exportDone:'Script downloaded!\n\nOpen Terminal and run:\n\nbash ~/Downloads/{0}\n\nIt will ask you to locate your GoPro folder, then gather the {1} clips into _Exports/{2} (hard links when the disk allows it = zero extra space, copies otherwise). Then in iMovie: File → Import Media → that folder.',
+ chooseFolderMac:'Select your GoPro folder (the one used in the app)'
 }};
 let LANG='fr';
 const t=k=>(I18N[LANG]&&I18N[LANG][k])??I18N.fr[k]??k;
@@ -1088,21 +1106,25 @@ async function extractMeta(file){
       if(fmt!=='gpmd')continue;
       const stbl=findBox(dv,trak.start,trak.end,['mdia','minf','stbl']);
       // Offsets des chunks
-      let offsets=[];
+      let count=0,getOff=null;
       const stco=findBox(dv,stbl.start,stbl.end,['stco']);
       const co64=findBox(dv,stbl.start,stbl.end,['co64']);
-      if(stco){const n=dv.getUint32(stco.start+4);for(let i=0;i<Math.min(n,20);i++)offsets.push(dv.getUint32(stco.start+8+i*4));}
-      else if(co64){const n=dv.getUint32(co64.start+4);for(let i=0;i<Math.min(n,20);i++)offsets.push(Number(dv.getBigUint64(co64.start+8+i*8)));}
+      if(stco){count=dv.getUint32(stco.start+4);getOff=i=>dv.getUint32(stco.start+8+i*4);}
+      else if(co64){count=dv.getUint32(co64.start+4);getOff=i=>Number(dv.getBigUint64(co64.start+8+i*8));}
+      if(!count)break;
       // Tailles des échantillons
       const stsz=findBox(dv,stbl.start,stbl.end,['stsz']);
-      let sizes=[],uniform=0;
-      if(stsz){uniform=dv.getUint32(stsz.start+4);const n=dv.getUint32(stsz.start+8);
-        if(!uniform)for(let i=0;i<Math.min(n,20);i++)sizes.push(dv.getUint32(stsz.start+12+i*4));}
-      // Lit jusqu'à 8 échantillons pour trouver un fix GPS
-      for(let i=0;i<Math.min(offsets.length,8)&&!meta.gps;i++){
-        const sz=uniform||sizes[i]||sizes[0]||65536;
+      let uniform=0,nSz=0,getSz=null;
+      if(stsz){uniform=dv.getUint32(stsz.start+4);nSz=dv.getUint32(stsz.start+8);
+        if(!uniform)getSz=i=>dv.getUint32(stsz.start+12+i*4);}
+      // Échantillonne jusqu'à 24 points répartis sur TOUTE la vidéo :
+      // le fix GPS peut n'arriver qu'en cours de clip (verrouillage satellites ~1-2 min)
+      const m=Math.min(24,count);
+      for(let k=0;k<m&&!meta.gps;k++){
+        const i=Math.floor(k*(count-1)/Math.max(m-1,1));
+        const sz=uniform||(getSz&&i<nSz?getSz(i):65536);
         try{
-          const sdv=await dvSlice(file,offsets[i],Math.min(sz,512*1024));
+          const sdv=await dvSlice(file,getOff(i),Math.min(sz,512*1024));
           const ctx={};
           parseGPMF(sdv,0,sdv.byteLength,ctx);
           if(ctx.gps)meta.gps=ctx.gps;
@@ -1173,6 +1195,13 @@ async function scanEntries(found){
       fileHandles[f.path]=f.handle;
       const prev=existing[f.path];
       if(prev&&prev.size===file.size&&prev.mtime===file.lastModified){
+        if(prev.lat==null){ // retente l'extraction GPS (parseur amélioré, fichier inchangé)
+          const meta=await extractMeta(file);
+          if(meta.gps){
+            prev.lat=meta.gps.lat;prev.lon=meta.gps.lon;prev.alt=meta.gps.alt;
+            await idb('videos','readwrite',s=>s.put(prev));
+          }
+        }
         newList.push(prev); // déjà indexée, on garde tags/notes/miniature
         continue;
       }
@@ -1192,6 +1221,7 @@ async function scanEntries(found){
     }catch(e){console.warn('scan',f.path,e);}
   }
   videos=newList;
+  await inheritGPS(); // positions héritées pour les clips sans fix
   await idb('videos','readwrite',s=>{ // purge les fichiers disparus
     videos.forEach(v=>s.put(v));
   });
@@ -1267,6 +1297,32 @@ async function reconnect(){
       await scan();
     }
   }catch(e){setStatus(t('err')+e.message);}
+}
+
+/* ================= Héritage GPS ================= */
+// Position effective : réelle, ou héritée d'un clip voisin dans le temps
+function gpsOf(v){
+  if(v.lat!=null)return{lat:v.lat,lon:v.lon,alt:v.alt,approx:false};
+  if(v.gpsApprox)return{lat:v.gpsApprox.lat,lon:v.gpsApprox.lon,alt:v.gpsApprox.alt,approx:true};
+  return null;
+}
+async function inheritGPS(){
+  const MAX=15*60*1000; // ±15 minutes
+  const withG=videos.filter(v=>v.lat!=null);
+  for(const v of videos){
+    const prev=JSON.stringify(v.gpsApprox||null);
+    if(v.lat!=null){delete v.gpsApprox;}
+    else{
+      let best=null,bestDt=MAX+1;
+      for(const w of withG){
+        const dt=Math.abs(w.date-v.date);
+        if(dt<bestDt){bestDt=dt;best=w;}
+      }
+      if(best&&bestDt<=MAX)v.gpsApprox={lat:best.lat,lon:best.lon,alt:best.alt,from:best.name,dt:Math.max(1,Math.round(bestDt/60000))};
+      else delete v.gpsApprox;
+    }
+    if(prev!==JSON.stringify(v.gpsApprox||null))await saveRec(v);
+  }
 }
 
 /* ================= Filtres & rendu ================= */
@@ -1364,18 +1420,23 @@ function filtered(){
     if(q&&!(v.name.toLowerCase().includes(q)||(v.notes||'').toLowerCase().includes(q)||(v.tags||[]).some(t=>t.toLowerCase().includes(q))))return false;
     if(from&&v.date<from)return false;
     if(to&&v.date>to)return false;
-    if(gpsOnly&&v.lat==null)return false;
+    if(gpsOnly&&!gpsOf(v))return false;
     if(selectedFolder==='__none'&&v.folder)return false;
     if(selectedFolder&&selectedFolder!=='__none'&&!(v.folder===selectedFolder||(v.folder||'').startsWith(selectedFolder+'/')))return false;
     if(activeTags.size&&![...activeTags].every(t=>(v.tags||[]).includes(t)))return false;
     return true;
   }).sort((a,b)=>b.date-a.date);
 }
+let selectMode=false;
+const selectedIds=new Set();
 function cardHTML(v){
   const bg=v.thumb?`style="background-image:url('${v.thumb}')"`:'';
-  return `<div class="card" draggable="true" data-id="${esc(v.id)}">
+  const sel=selectMode&&selectedIds.has(v.id);
+  const g=gpsOf(v);
+  return `<div class="card${sel?' sel':''}" draggable="true" data-id="${esc(v.id)}">
     <div class="thumb" ${bg}>${v.thumb?'':'🎬'}
-      ${v.lat!=null?'<span class="gpsBadge">📍 GPS</span>':''}
+      ${sel?'<span class="selBadge">✓</span>':''}
+      ${g?`<span class="gpsBadge${g.approx?' approx':''}">📍 ${g.approx?'~':'GPS'}</span>`:''}
       ${v.duration?`<span class="dur">${fmtDur(v.duration)}</span>`:''}
     </div>
     <div class="cardBody">
@@ -1388,6 +1449,10 @@ function cardHTML(v){
 function render(){
   const list=filtered();
   $('count').textContent=`${list.length} ${list.length===1?t('vid'):t('vids')}`;
+  $('btnSelect').textContent=t('selectBtn');
+  $('btnSelect').classList.toggle('active',selectMode);
+  $('btnExportSel').style.display=selectMode&&selectedIds.size?'':'none';
+  $('btnExportSel').textContent=T('exportSel',selectedIds.size);
   $('empty').style.display=videos.length?'none':'block';
   renderSidebar();
   // chips de tags
@@ -1487,11 +1552,13 @@ function renderMap(list){
   if(mapLayer)mapLayer.remove();
   mapLayer=L.layerGroup().addTo(map);
   const pts=[];
-  list.filter(v=>v.lat!=null).forEach(v=>{
-    pts.push([v.lat,v.lon]);
-    const m=L.circleMarker([v.lat,v.lon],{radius:8,color:'#25c2a0',fillColor:'#25c2a0',fillOpacity:.85,weight:2});
+  list.forEach(v=>{
+    const g=gpsOf(v);if(!g)return;
+    pts.push([g.lat,g.lon]);
+    const col=g.approx?'#f59e0b':'#25c2a0';
+    const m=L.circleMarker([g.lat,g.lon],{radius:8,color:col,fillColor:col,fillOpacity:g.approx?.5:.85,weight:2,dashArray:g.approx?'3,3':null});
     m.bindPopup(`${v.thumb?`<img class="popupThumb" src="${v.thumb}">`:''}
-      <b>${esc(v.name)}</b><br><small>${fmtDate(v.date)}${v.alt!=null?` · ${t('alt')} ${v.alt} m`:''}</small><br>
+      <b>${esc(v.name)}</b><br><small>${fmtDate(v.date)}${g.alt!=null?` · ${t('alt')} ${g.alt} m`:''}${g.approx?`<br>≈ ${esc(T('approxNote',v.gpsApprox.from,v.gpsApprox.dt))}`:''}</small><br>
       <a href="#" onclick="openModal('${esc(v.id).replace(/'/g,"\\'")}');return false">${t('open')}</a>`);
     m.addTo(mapLayer);
   });
@@ -1505,7 +1572,8 @@ async function openModal(id){
   modalId=id;
   $('modal').style.display='flex';
   $('modalTitle').textContent=v.name;
-  const gps=v.lat!=null?`📍 <a href="https://www.google.com/maps?q=${v.lat},${v.lon}" target="_blank">${v.lat.toFixed(5)}, ${v.lon.toFixed(5)}</a>${v.alt!=null?` (${t('alt')} ${v.alt} m)`:''}`:t('noGps');
+  const g=gpsOf(v);
+  const gps=g?`📍 <a href="https://www.google.com/maps?q=${g.lat},${g.lon}" target="_blank">${g.lat.toFixed(5)}, ${g.lon.toFixed(5)}</a>${g.alt!=null?` (${t('alt')} ${g.alt} m)`:''}${g.approx?`<br><span style="color:#f59e0b">≈ ${esc(T('approxNote',v.gpsApprox.from,v.gpsApprox.dt))}</span>`:''}`:t('noGps');
   $('modalMeta').innerHTML=`📅 ${fmtDate(v.date)}<br>${gps}<br>⏱️ ${v.duration?fmtDur(v.duration):'—'} · 💾 ${fmtSize(v.size)}<br>📄 ${esc(v.id)}`;
   $('notesInput').value=v.notes||'';
   $('folderInput').value=v.folder||'';
@@ -1557,6 +1625,7 @@ async function doImport(file){
       if(v){v.tags=imp.tags||v.tags;v.notes=imp.notes||v.notes;v.folder=imp.folder||v.folder;await saveRec(v);n++;}
       else{videos.push(imp);await saveRec(imp);n++;}
     }
+    await inheritGPS();
     setStatus(T('imported',n));render();
   }catch(e){setStatus(t('importErr')+e.message);}
 }
@@ -1624,8 +1693,43 @@ $('tagChips').onclick=e=>{
 };
 document.querySelector('main').addEventListener('click',e=>{
   const card=e.target.closest('.card');
-  if(card)openModal(card.dataset.id);
+  if(!card)return;
+  if(selectMode){
+    const id=card.dataset.id;
+    selectedIds.has(id)?selectedIds.delete(id):selectedIds.add(id);
+    render();
+  }else openModal(card.dataset.id);
 });
+$('btnSelect').onclick=()=>{selectMode=!selectMode;if(!selectMode)selectedIds.clear();render();};
+$('btnExportSel').onclick=exportSelection;
+function shName(s){return String(s).replace(/[\/\\"'`$]/g,'-').trim();}
+function exportSelection(){
+  const list=videos.filter(v=>selectedIds.has(v.id)).sort((a,b)=>a.date-b.date);
+  if(!list.length)return;
+  const name=prompt(t('exportNamePrompt'),t('exportDefault'));
+  if(name===null)return;
+  const proj=shName(name)||t('exportDefault');
+  const lines=[
+    '#!/bin/bash',
+    `# GoPro Organizer — export "${proj}" (${list.length} clips)`,
+    'set -e',
+    `FOLDER=$(osascript -e 'POSIX path of (choose folder with prompt "${t('chooseFolderMac').replace(/"/g,'\\"')}")')`,
+    'cd "$FOLDER"',
+    `DEST="_Exports/${proj}"`,
+    'mkdir -p "$DEST"',
+    'put(){ if [ -f "$1" ]; then ln "$1" "$DEST/$2" 2>/dev/null || cp -v "$1" "$DEST/$2"; else echo "⚠️  introuvable : $1"; fi; }'
+  ];
+  list.forEach((v,i)=>{
+    const nice=`${String(i+1).padStart(2,'0')} - ${dayKey(v.date)}${v.folder?' - '+shName(v.folder.split('/').pop()):''}${(v.tags&&v.tags.length)?' - '+shName(v.tags.join(' ')):''} - ${shName(v.name)}`;
+    lines.push(`put "${v.id.replace(/"/g,'\\"')}" "${nice}"`);
+  });
+  lines.push(`echo "✅ ${list.length} clips → $DEST"`,'open "$DEST"');
+  const fname=`export-${proj.toLowerCase().replace(/\s+/g,'-')}.sh`;
+  const blob=new Blob([lines.join('\n')+'\n'],{type:'text/plain'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);a.download=fname;a.click();URL.revokeObjectURL(a.href);
+  alert(T('exportDone',fname,list.length,proj));
+}
 $('modalClose').onclick=closeModal;
 $('modal').onclick=e=>{if(e.target.id==='modal')closeModal();};
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
